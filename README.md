@@ -9,11 +9,17 @@ config
 A sample config.ini content is listed below.
 
 [Function]
+
 Receive=0
+
 Send=1
+
 Train=1
+
 Rescue=0
+
 [Server_Inner]
+
 IP=192.168.1.212
 Port=-1
 [Server_Inter]
