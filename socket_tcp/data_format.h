@@ -3,6 +3,7 @@
 
 #include "stdafx.h"
 
+#define IPLENGTH		15
 enum TYPEID{
 	TRAIN_POS		= 0,
 	PLANE_POS		= 1,
@@ -42,4 +43,11 @@ struct HANDSET_INFO
 	std::string		strContent;
 	std::string		strDateTime;		
 };
+
+struct SERVER_INFO
+{
+	int				iPort;
+	char			strIP[IPLENGTH];
+};
 #endif	//_DATA_FORMAT_H
+

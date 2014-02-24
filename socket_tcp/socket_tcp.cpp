@@ -6,7 +6,6 @@
 #include "ToolFunctionSet.h"
 #include "data_format.h"
 #include "SaveToOracle.h"
-#include "Base16.h"
 #include "TestSend.h"
 
 #define PORT			7069
@@ -14,15 +13,17 @@
 #define TIME_OUT_TIME	10  //s超时时间10秒
 #define MAXCNT			100	//max count of socket clients
 
-SOCKET			g_sockfd			= -1;
-SOCKET			g_server_sock		= -1;
+SOCKET			g_sockfd				= -1;
+SOCKET			g_sock2fd				= -1;
+SOCKET			g_server_sock			= -1;
 static SOCKET	g_SockClient[MAXCNT]	= {0};
-static int		icount				= 0;
+static int		icount					= 0;
 
 IDBConnect		*gpDBConn;
 IDBRecordSet	*gpDBRs;
 TCHAR g_pPath[MAX_PATH];
 ToolFunctionSet *g_pTool = new ToolFunctionSet();
+CSaveToOracle *g_pSaveToOracle = new CSaveToOracle();
 char g_host[BUFSIZ];
 char g_user[BUFSIZ];
 char g_passwd[BUFSIZ];
@@ -33,6 +34,9 @@ int  g_funcReceive;
 int	 g_funcTrain;
 int  g_funcRescue;
 
+int iInnerPort(71069), iInterPort(777);
+char chInnerServerIP[IPLENGTH] = {0};
+char chInterServerIP[IPLENGTH] = {0};
 
 void uninit(int sig)
 {
@@ -68,12 +72,14 @@ void GetConfigPath(TCHAR *pPath, ToolFunctionSet *pTool)
 	StringCchPrintf(pPath, MAX_PATH/sizeof(TCHAR), _T("%s//config.ini"), pPath);
 }
 
-void GetServerInfo( int* iPort, char *chServerIP ) 
+void GetServerInfo( int* iInnerPort, char *chInnerServerIP, int* iInterPort2, char* chInterServerIP2 ) 
 {
 	TCHAR szServerIP[IPLENGTH];	
 
-	*iPort = GetPrivateProfileInt(_T("Server"), _T("Port"), 0, g_pPath);
-	GetPrivateProfileString(_T("Server"), _T("IP"), _T(""), szServerIP, MAX_PATH/sizeof(TCHAR), g_pPath);
+	*iInnerPort = GetPrivateProfileInt(_T("Server_Inner"), _T("Port"), 0, g_pPath);
+	GetPrivateProfileString(_T("Server_Inner"), _T("IP"), _T(""), szServerIP, MAX_PATH/sizeof(TCHAR), g_pPath);
+	*iInterPort2 = GetPrivateProfileInt(_T("Server_Inter"), _T("Port"), 0, g_pPath);
+	GetPrivateProfileString(_T("Server_Inter"), _T("IP"), _T(""), chInterServerIP2, MAX_PATH/sizeof(TCHAR), g_pPath);
 
 	GetPrivateProfileString(_T("Database"), _T("host"), _T(""), g_host, MAX_PATH/sizeof(TCHAR), g_pPath);
 	GetPrivateProfileString(_T("Database"), _T("user"), _T(""), g_user, MAX_PATH/sizeof(TCHAR), g_pPath);
@@ -86,7 +92,7 @@ void GetServerInfo( int* iPort, char *chServerIP )
 	g_funcRescue = GetPrivateProfileInt(_T("Function"), _T("Rescue"), 0, g_pPath);
 	g_funcTrain = GetPrivateProfileInt(_T("Function"), _T("Train"), 0, g_pPath);
 
-	g_pTool->ConvertToMChar(chServerIP, IPLENGTH, szServerIP);
+	g_pTool->ConvertToMChar(chInnerServerIP, IPLENGTH, szServerIP);
 	//printf("%s:%d\n", chServerIP, iPort);	
 	//return *iPort;
 }
@@ -117,7 +123,7 @@ unsigned int __stdcall accept_thread(void* param)
 			}
 			else if (g_funcTrain)
 			{
-				TestTrainPosInfo(newsockfd);
+				TestTrainPosInfo_45(newsockfd);
 			}			
 		}
 		//Sleep(1);
@@ -270,6 +276,104 @@ int connect_retry(int &ret, int sockfd, const struct sockaddr *address, int len)
 	return -1;
 }
 
+int RecvData( SOCKET sockfd, int iPort, char* chServerIP, CSaveToOracle * pSaveToOracle ) 
+{
+	int len(0), ret(0);
+	struct sockaddr_in address;
+	char char_send[100] = { 0 };
+	sockfd = socket(AF_INET, SOCK_STREAM, 0);
+	if (sockfd == INVALID_SOCKET)  
+	{  
+		WSACleanup();  
+		printf("socket() failed!\n");
+	}  
+
+	::setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char*)TIME_OUT_TIME, sizeof(TIME_OUT_TIME));	//send timeout
+	::setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)TIME_OUT_TIME, sizeof(TIME_OUT_TIME));	//recv timeout
+
+	//设置非阻塞连接
+	// 	unsigned long ul = 1;
+	// 	ret = ioctlsocket(g_sockfd, FIONBIO, (unsigned long*)&ul);
+	// 	if (ret == SOCKET_ERROR)
+	// 	{
+	// 		printf("非阻塞连接失败\r\n");
+	// 		return -1;
+	// 	}
+
+	memset(&address, 0, sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_port = htons(iPort);
+	address.sin_addr.s_addr = inet_addr(chServerIP);
+
+	len = sizeof(address);
+	ret = connect(sockfd, (struct sockaddr *)&address, len);
+
+	if (ret == SOCKET_ERROR)
+	{
+		ReconnectSock(ret, &address, iPort, len);
+	}	
+
+	printf("connect %s:%d succeed\n", inet_ntoa(address.sin_addr), iPort);
+
+	int timeCount = 0;
+
+	while(1)
+	{
+		++timeCount;
+		if (timeCount > 11000)
+		{
+			ReconnectSock(ret, &address, iPort, len);
+		}
+
+		char buf[BUFSIZ] = {0};
+		int byte = 0;
+		memset(buf, 0, BUFSIZ);
+		if((byte = recv(sockfd, buf, BUFSIZ, 0)) > 0)
+		{
+			buf[byte] = '\0';
+			printf("recv: %s", buf);
+
+			int size = 0;
+			int i = 0;
+			for(i = 0; i < icount; i++)
+			{
+				if((size = send(g_SockClient[i], buf, byte, 0)) < 0)
+				{
+					printf("send to client error\n");
+				}
+			}
+			// TODO write into DB, transfer data to client	
+
+			if (buf[0] == 'h' || buf[0] == 'H')
+			{
+				//TODO heart beat, reset timer
+				timeCount = 0;
+				printf("heart beat: %s!\n", buf);
+			}
+			else
+			{
+				timeCount = 0;
+				DealValidData(pSaveToOracle, ret, buf);
+			}
+		}
+		Sleep(1);
+	}	return ret;
+}
+
+unsigned int __stdcall rece_inner_data(void* param)
+{
+	int ret(-1);
+	ret = RecvData(g_sockfd, iInnerPort, chInnerServerIP, g_pSaveToOracle);
+	return ret;
+}
+
+unsigned int __stdcall rece_inter_data(void* param)
+{
+	int ret(-1);
+	ret = RecvData(g_sock2fd, iInterPort, chInterServerIP, g_pSaveToOracle);
+	return ret;
+}
+
 int _tmain(int argc, _TCHAR *argv[])
 {
 	signal(SIGTERM, uninit);
@@ -278,9 +382,7 @@ int _tmain(int argc, _TCHAR *argv[])
 	//	int sockfd;
 	GetConfigPath(g_pPath, g_pTool);
 	
-	int iPort = 71069;
-	char chServerIP[IPLENGTH] = {0};
-	GetServerInfo(&iPort, chServerIP);
+	GetServerInfo(&iInnerPort, chInnerServerIP, &iInterPort, chInterServerIP);
 
 	int ret; 
 
@@ -330,92 +432,15 @@ int _tmain(int argc, _TCHAR *argv[])
 	if (g_funcReceive)
 	{
 		initOracle();
-		CSaveToOracle *pSaveToOracle = new CSaveToOracle(gpDBConn, gpDBRs);
+		g_pSaveToOracle = new CSaveToOracle(gpDBConn, gpDBRs);
 
-		int len;
-		struct sockaddr_in address;
-		char char_send[100] = { 0 };
-		g_sockfd = socket(AF_INET, SOCK_STREAM, 0);
-		if (g_sockfd == INVALID_SOCKET)  
-		{  
-			WSACleanup();  
-			printf("socket() failed!\n");
-		}  
-	
-		::setsockopt(g_sockfd, SOL_SOCKET, SO_SNDTIMEO, (char*)TIME_OUT_TIME, sizeof(TIME_OUT_TIME));	//send timeout
-		::setsockopt(g_sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)TIME_OUT_TIME, sizeof(TIME_OUT_TIME));	//recv timeout
-
-		//设置非阻塞连接
-	// 	unsigned long ul = 1;
-	// 	ret = ioctlsocket(g_sockfd, FIONBIO, (unsigned long*)&ul);
-	// 	if (ret == SOCKET_ERROR)
-	// 	{
-	// 		printf("非阻塞连接失败\r\n");
-	// 		return -1;
-	// 	}
-	
-		memset(&address, 0, sizeof(address));
-		address.sin_family = AF_INET;
-		address.sin_port = htons(iPort);
-	#ifdef WIN32
-		address.sin_addr.s_addr = inet_addr(chServerIP);
-	#else
-		inet_pton(AF_INET, argv[1], &address.sin_addr);
-	#endif	
-
-		len = sizeof(address);
-		ret = connect(g_sockfd, (struct sockaddr *)&address, len);
-
-		if (ret == SOCKET_ERROR)
-		{
-			ReconnectSock(ret, &address, iPort, len);
-		}	
-
-		printf("connect %s:%d succeed\n", inet_ntoa(address.sin_addr), iPort);
-
-		int timeCount = 0;
-
-		while(1)
-		{
-			++timeCount;
-			if (timeCount > 11000)
-			{
-				ReconnectSock(ret, &address, iPort, len);
-			}
-
-			char buf[BUFSIZ] = {0};
-			int byte = 0;
-			memset(buf, 0, BUFSIZ);
-			if((byte = recv(g_sockfd, buf, BUFSIZ, 0)) > 0)
-			{
-				buf[byte] = '\0';
-				printf("recv: %s", buf);
-			
-				int size = 0;
-				int i = 0;
-				for(i = 0; i < icount; i++)
-				{
-					if((size = send(g_SockClient[i], buf, byte, 0)) < 0)
-					{
-						printf("send to client error\n");
-					}
-				}
-				// TODO write into DB, transfer data to client	
-			
-				if (buf[0] == 'h' || buf[0] == 'H')
-				{
-					//TODO heart beat, reset timer
-					timeCount = 0;
-					printf("heart beat: %s!\n", buf);
-				}
-				else
-				{
-					timeCount = 0;
-					DealValidData(pSaveToOracle, ret, buf);
-				}
-			}
-			Sleep(1);
-		}
+		HANDLE hThread;
+		unsigned int uiThreadID(0);
+		if (iInnerPort > 0)
+			hThread = (HANDLE)_beginthreadex((void*)NULL, 0, (rece_inner_data), NULL, 0, &uiThreadID);
+		if (iInterPort > 0)
+			hThread = (HANDLE)_beginthreadex((void*)NULL, 0, (rece_inter_data), NULL, 0, &uiThreadID);
+		
 	}
 	while(1)
 	{
@@ -423,6 +448,7 @@ int _tmain(int argc, _TCHAR *argv[])
 	}
 	closesocket(g_server_sock);
 	closesocket(g_sockfd);
+	closesocket(g_sock2fd);
 	for (int i = 0; i < 100; i++)
 	{
 		closesocket(g_SockClient[i]);
