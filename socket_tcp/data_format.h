@@ -4,9 +4,10 @@
 #include "stdafx.h"
 
 #define IPLENGTH		15
-enum TYPEID{
+enum TYPEID{	//34医院准备消息 35图片信息 5派车 6心率
 	TRAIN_POS		= 0,
 	PLANE_POS		= 1,
+	PERSON_POS		= 12,
 	CAR_POS			= 2,
 	SEARCHER_POS	= 31,
 	DAMAGE_INFO		= 32,
@@ -15,7 +16,8 @@ enum TYPEID{
 
 enum DB_ERRNO
 {
-	WRONG_DATATYPE
+	WRONG_DATATYPE	= -1,
+	NONEEDTODEAL	= 0
 };
 
 struct TRAINPOS_INFO
@@ -30,6 +32,7 @@ struct TRAINPOS_INFO
 struct RESCUEPOS_INFO
 {
 	int			    iID;	
+	int				iHeartRate;
 	std::string	    strLongitude;
 	std::string	    strLatitude;
 	std::string		strCardID;

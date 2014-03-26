@@ -3,6 +3,7 @@
 
 #include "stdafx.h"
 #include <process.h>
+#include <map>
 #include "ToolFunctionSet.h"
 #include "data_format.h"
 #include "SaveToOracle.h"
@@ -12,11 +13,13 @@
 #define IPLENGTH		15
 #define TIME_OUT_TIME	10  //s超时时间10秒
 #define MAXCNT			100	//max count of socket clients
+#define BUFSIZ			5120
+
 
 SOCKET			g_sockfd				= -1;
 SOCKET			g_sock2fd				= -1;
 SOCKET			g_server_sock			= -1;
-static SOCKET	g_SockClient[MAXCNT]	= {0};
+static map<string, SOCKET>	g_mapSockClient;
 static int		icount					= 0;
 
 IDBConnect		*gpDBConn;
@@ -37,6 +40,7 @@ int  g_funcRescue;
 int iInnerPort(71069), iInterPort(777);
 char chInnerServerIP[IPLENGTH] = {0};
 char chInterServerIP[IPLENGTH] = {0};
+unsigned int __stdcall send_heartbeat(void* param);
 
 void uninit(int sig)
 {
@@ -111,7 +115,13 @@ unsigned int __stdcall accept_thread(void* param)
 		if (newsockfd != -1)
 		{
 			printf("[Client in %s, fd is %d]\n", inet_ntoa(client_addr.sin_addr), newsockfd);
-			g_SockClient[icount++] = newsockfd;
+			//g_SockClient[icount++] = newsockfd;
+			g_mapSockClient[inet_ntoa(client_addr.sin_addr)] = newsockfd;
+
+			HANDLE hThread;
+			unsigned int uiThreadID(0);
+			hThread = (HANDLE)_beginthreadex((void*)NULL, 0, (send_heartbeat), (void *)newsockfd, 0, &uiThreadID);
+
 			if (g_funcRescue)
 			{
 				TestSendPlanePosInfo(newsockfd);
@@ -246,14 +256,32 @@ void DealValidData(CSaveToOracle *pSaveToOracle, int &ret, const char *buf)
 	}
 }
 
-void ReconnectSock( int &ret, const struct sockaddr_in *address, int iPort, int len ) 
+void ReconnectSock( int &ret, int sockfd, const struct sockaddr_in *address, int iPort, int len ) 
 {
 	while(ret != 0)
 	{
-		printf("connect %s:%d error\n", inet_ntoa(address->sin_addr), iPort);
+		SYSTEMTIME time; 
+		GetLocalTime( &time ); 
+		char tmp[64] = {0};
+		snprintf(tmp, sizeof(tmp), "%4d-%02d-%02d %02d:%02d:%02d", 
+			time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond);
+		printf("[%s] connect %s:%d error\n", tmp, inet_ntoa(address->sin_addr), iPort);
 		Sleep(2000);
-		printf("reconnecting ...\n");
-		ret = connect(g_sockfd, (struct sockaddr *)address, len);
+		//printf("reconnecting ...\n");
+		closesocket(sockfd);
+		sockfd = socket(AF_INET, SOCK_STREAM, 0);
+		if (sockfd == INVALID_SOCKET)  
+		{  
+			WSACleanup();  
+			printf("socket() failed!\n");
+		}  
+
+		::setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char*)TIME_OUT_TIME, sizeof(TIME_OUT_TIME));	//send timeout
+		::setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)TIME_OUT_TIME, sizeof(TIME_OUT_TIME));	//recv timeout
+
+		ret = connect(sockfd, (struct sockaddr *)address, len);
+		//printf( "%d\n", ret);
+		
 	}
 }
 
@@ -307,39 +335,51 @@ int RecvData( SOCKET sockfd, int iPort, char* chServerIP, CSaveToOracle * pSaveT
 
 	len = sizeof(address);
 	ret = connect(sockfd, (struct sockaddr *)&address, len);
+	//ret = accept(sockfd, (struct sockaddr *)&address, &len);
 
 	if (ret == SOCKET_ERROR)
 	{
-		ReconnectSock(ret, &address, iPort, len);
+		ReconnectSock(ret, sockfd, &address, iPort, len);
 	}	
 
 	printf("connect %s:%d succeed\n", inet_ntoa(address.sin_addr), iPort);
 
-	int timeCount = 0;
+	int timeCount = 0;		
 
 	while(1)
 	{
 		++timeCount;
-		if (timeCount > 11000)
+		if (timeCount > 1100)
 		{
-			ReconnectSock(ret, &address, iPort, len);
+			ret = -1;
+			ReconnectSock(ret, sockfd, &address, iPort, len);
 		}
 
 		char buf[BUFSIZ] = {0};
-		int byte = 0;
-		memset(buf, 0, BUFSIZ);
-		if((byte = recv(sockfd, buf, BUFSIZ, 0)) > 0)
-		{
-			buf[byte] = '\0';
-			printf("recv: %s", buf);
+		int byte = 0; 
+		//memset(buf, 0, BUFSIZ);
+
+		/*
+		FILE *cin;
+		char *p, buffer[1024];
+		cin = fdopen(sockfd, "r");
+		setbuf(cin, (char *)0);
+
+		// main loop
+		while (fgets(buffer, 1024, cin) != NULL) {
+		// 去掉buf末尾的换行符 
+			while ((p = &buf[strlen(buf)-1]) && (*p == '\r' || *p == '\n')) 
+				*p = 0;
 
 			int size = 0;
 			int i = 0;
+
+			printf("recv: %s", buf);
 			for(i = 0; i < icount; i++)
 			{
 				if((size = send(g_SockClient[i], buf, byte, 0)) < 0)
 				{
-					printf("send to client error\n");
+					printf("send %s\n", buf);
 				}
 			}
 			// TODO write into DB, transfer data to client	
@@ -356,8 +396,80 @@ int RecvData( SOCKET sockfd, int iPort, char* chServerIP, CSaveToOracle * pSaveT
 				DealValidData(pSaveToOracle, ret, buf);
 			}
 		}
+		*/
+
+		if((byte = recv(sockfd, buf, BUFSIZ, 0)) > 0)
+		{
+			buf[byte] = '\0';
+			printf("recv: %s", buf);
+
+			vector<string> vecString;
+			int len = split(buf, "\r\n", vecString);
+
+			int size = 0;
+			int i = 0;
+			
+			for(i = 0; i < len; i++)
+			{
+				char buf[BUFSIZ];
+				snprintf(buf, BUFSIZ, "%s\r\n", vecString[i].c_str());
+				//strcat(buf, "\r\n");
+				int len = strlen(buf);
+				//printf("%d\n" ,len);
+
+				map<string, SOCKET>::iterator it;
+				for(it = g_mapSockClient.begin(); it != g_mapSockClient.end(); it++)
+				{
+					if((size = send(it->second, buf, len, 0)) < 0)
+					{
+						//printf("send %s\n", buf);
+					}
+				}
+				// TODO write into DB, transfer data to client	
+
+				if (buf[0] == 'h' || buf[0] == 'H')
+				{
+					//TODO heart beat, reset timer
+					timeCount = 0;
+					//printf("heart beat: %s!\n", buf);
+				}
+				else
+				{
+					timeCount = 0;
+					DealValidData(pSaveToOracle, ret, buf);
+				}
+			}
+		}
+		
+		
 		Sleep(1);
-	}	return ret;
+	}
+
+	//fclose(cin);
+	closesocket(sockfd);
+	return ret;
+}
+
+unsigned int __stdcall send_heartbeat(void* param)
+{
+	int *sock = (int*)param;
+	char buf[20];
+	memset(buf, 0, 20);
+	snprintf(buf, 20, "%s\r\n", "heartbeat09");
+	int byte = strlen(buf);
+	
+	while(1)
+	{
+		map<string, SOCKET>::iterator it;
+		for(it = g_mapSockClient.begin(); it != g_mapSockClient.end(); it++)
+		{
+			send(it->second, buf, byte, 0);
+		}
+
+		Sleep(5000);
+	}
+
+	return 0;
 }
 
 unsigned int __stdcall rece_inner_data(void* param)
@@ -449,9 +561,10 @@ int _tmain(int argc, _TCHAR *argv[])
 	closesocket(g_server_sock);
 	closesocket(g_sockfd);
 	closesocket(g_sock2fd);
-	for (int i = 0; i < 100; i++)
+	map<string, SOCKET>::iterator it;
+	for(it = g_mapSockClient.begin(); it != g_mapSockClient.end(); it++)
 	{
-		closesocket(g_SockClient[i]);
+		closesocket(it->second);
 	}
 	WSACleanup();
 

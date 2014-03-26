@@ -376,7 +376,7 @@ void GenLine(PosInfo startPos, PosInfo endPos, char *cardid, double interval)
 	{
 		curPos.lPosY = endPos.lPosY + goStartLineInterval * (curPos.lPosX - endPos.lPosX);
 
-		StringCchPrintf(buf, BUFSIZ, "0,%s,%.8f,%.8f,", cardid, curPos.lPosX, curPos.lPosY);
+		StringCchPrintf(buf, BUFSIZ, "6,%s,%.8f,%.8f,", cardid, curPos.lPosX, curPos.lPosY);
 
 		SYSTEMTIME time; 
 		GetLocalTime( &time ); 

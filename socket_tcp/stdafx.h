@@ -25,3 +25,6 @@
 #define snprintf _snprintf_s 
 using namespace std;
 // TODO: reference additional headers your program requires here
+
+#define IP_ADD_SOURCE_MEMBERSHIP   25
+#define IP_DROP_SOURCE_MEMBERSHIP 26
