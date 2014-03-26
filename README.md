@@ -9,21 +9,37 @@ config
 A sample config.ini content is listed below.
 
 [Function]
+
 Receive=0
+
 Send=1
+
 Train=1
+
 Rescue=0
+
 [Server_Inner]
+
 IP=192.168.1.212
+
 Port=-1
+
 [Server_Inter]
+
 IP=192.168.1.130
+
 Port=5544
+
 [Database]
+
 host=MIDCARDS_192.168.1.48
+
 user=midcards
-passwd=ht706
+
+passwd=password
+
 db=midcards
+
 port=1521
 
 
